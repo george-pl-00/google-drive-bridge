@@ -1,7 +1,7 @@
 import os
 import requests
 from openai import OpenAI
-from config import OPENAI_API_KEY, BRIDGE_URL, MODEL
+from config_new import OPENAI_API_KEY, BRIDGE_URL, MODEL
 
 # 🔑 Set your OpenAI API key
 os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
