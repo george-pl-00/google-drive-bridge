@@ -20,7 +20,7 @@ from google.auth.transport.requests import Request as GoogleRequest
 app = FastAPI()
 SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 REDIRECT_URI = "https://my-google-bridge-1b5a7ab10d6b.herokuapp.com/oauth2callback"
-TOKEN_FILE = "/tmp/token.json"
+TOKEN_FILE = "token.json"  # Use relative path - Heroku will handle this
 
 # -------------------------------------------------------------------
 # MODELS
@@ -90,9 +90,39 @@ def root():
             "create_doc": "POST /create_doc - Create a Google Document",
             "create_sheet": "POST /create_sheet - Create a Google Spreadsheet",
             "create_doc_chat": "POST /create_doc_chat - ChatGPT-friendly document creation",
-            "create_sheet_chat": "POST /create_sheet_chat - ChatGPT-friendly sheet creation"
+            "create_sheet_chat": "POST /create_sheet_chat - ChatGPT-friendly sheet creation",
+            "test_file": "GET /test_file - Test file writing capability"
         }
     }
+
+@app.get("/test_file")
+def test_file():
+    """Test if we can write files"""
+    try:
+        test_content = "test"
+        with open("test.txt", "w") as f:
+            f.write(test_content)
+        
+        # Try to read it back
+        with open("test.txt", "r") as f:
+            read_content = f.read()
+        
+        # Clean up
+        if os.path.exists("test.txt"):
+            os.remove("test.txt")
+        
+        return {
+            "status": "success",
+            "message": "File writing test passed",
+            "write_test": "✅",
+            "read_test": "✅" if read_content == test_content else "❌"
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": f"File writing test failed: {str(e)}",
+            "error": str(e)
+        }
 
 @app.get("/auth")
 def auth():
@@ -121,32 +151,47 @@ def auth():
 
 @app.get("/oauth2callback")
 def oauth2callback(request: Request):
-    # Use Heroku environment variables for OAuth credentials
-    client_id = os.environ.get('GOOGLE_OAUTH_CLIENT_ID')
-    client_secret = os.environ.get('GOOGLE_OAUTH_CLIENT_SECRET')
-    
-    if not client_id or not client_secret:
-        return {"status": "error", "message": "OAuth credentials not configured"}
-    
-    flow = Flow.from_client_config(
-        {
-            "web": {
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                "token_uri": "https://oauth2.googleapis.com/token",
-                "redirect_uris": [REDIRECT_URI]
-            }
-        },
-        SCOPES,
-        redirect_uri=REDIRECT_URI,
-    )
-    flow.fetch_token(authorization_response=str(request.url))
+    try:
+        print("🔄 OAuth callback started...")
+        
+        # Use Heroku environment variables for OAuth credentials
+        client_id = os.environ.get('GOOGLE_OAUTH_CLIENT_ID')
+        client_secret = os.environ.get('GOOGLE_OAUTH_CLIENT_SECRET')
+        
+        if not client_id or not client_secret:
+            print("❌ OAuth credentials not configured")
+            return {"status": "error", "message": "OAuth credentials not configured"}
+        
+        print("✅ OAuth credentials found, creating flow...")
+        flow = Flow.from_client_config(
+            {
+                "web": {
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                    "token_uri": "https://oauth2.googleapis.com/token",
+                    "redirect_uris": [REDIRECT_URI]
+                }
+            },
+            SCOPES,
+            redirect_uri=REDIRECT_URI,
+        )
+        
+        print("🔄 Fetching token from Google...")
+        flow.fetch_token(authorization_response=str(request.url))
 
-    creds = flow.credentials
-    save_credentials(creds)
+        print("✅ Token received, getting credentials...")
+        creds = flow.credentials
+        
+        print("💾 Saving credentials...")
+        save_credentials(creds)
 
-    return {"status": "ok", "message": "Authentication successful! Tokens saved."}
+        print("🎉 Authentication completed successfully!")
+        return {"status": "ok", "message": "Authentication successful! Tokens saved."}
+        
+    except Exception as e:
+        print(f"❌ OAuth callback error: {e}")
+        return {"status": "error", "message": f"Authentication failed: {str(e)}"}
 
 @app.post("/create_doc")
 def create_doc(req: DocRequest):
