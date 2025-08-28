@@ -20,7 +20,7 @@ from google.auth.transport.requests import Request as GoogleRequest
 app = FastAPI()
 SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 REDIRECT_URI = "https://my-google-bridge-1b5a7ab10d6b.herokuapp.com/oauth2callback"
-TOKEN_FILE = "token.json"
+TOKEN_FILE = "/tmp/token.json"
 
 # -------------------------------------------------------------------
 # MODELS
@@ -36,22 +36,34 @@ class SheetRequest(BaseModel):
 # -------------------------------------------------------------------
 def save_credentials(creds: Credentials):
     """Save OAuth credentials to file"""
-    with open(TOKEN_FILE, "w") as f:
-        f.write(creds.to_json())
+    try:
+        with open(TOKEN_FILE, "w") as f:
+            f.write(creds.to_json())
+        print(f"✅ Tokens saved to {TOKEN_FILE}")
+    except Exception as e:
+        print(f"❌ Error saving tokens: {e}")
+        raise
 
 def load_credentials() -> Credentials:
     """Load credentials from file and refresh if needed"""
-    if not os.path.exists(TOKEN_FILE):
+    try:
+        if not os.path.exists(TOKEN_FILE):
+            print(f"📁 Token file not found: {TOKEN_FILE}")
+            return None
+
+        print(f"📁 Loading tokens from: {TOKEN_FILE}")
+        creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
+
+        # Refresh token if expired
+        if creds and creds.expired and creds.refresh_token:
+            print("🔄 Refreshing expired token...")
+            creds.refresh(GoogleRequest())
+            save_credentials(creds)
+
+        return creds
+    except Exception as e:
+        print(f"❌ Error loading credentials: {e}")
         return None
-
-    creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
-
-    # Refresh token if expired
-    if creds and creds.expired and creds.refresh_token:
-        creds.refresh(GoogleRequest())
-        save_credentials(creds)
-
-    return creds
 
 def get_docs_service():
     creds = load_credentials()
@@ -138,13 +150,21 @@ def oauth2callback(request: Request):
 
 @app.post("/create_doc")
 def create_doc(req: DocRequest):
-    service = get_docs_service()
-    if not service:
-        return {"status": "error", "message": "Authentication required. Visit /auth first."}
+    try:
+        print(f"📝 Creating document: {req.name}")
+        service = get_docs_service()
+        if not service:
+            print("❌ No docs service - authentication required")
+            return {"status": "error", "message": "Authentication required. Visit /auth first."}
 
-    doc = service.documents().create(body={"title": req.name}).execute()
-    doc_id = doc.get("documentId")
-    return {"status": "success", "link": f"https://docs.google.com/document/d/{doc_id}"}
+        print("✅ Docs service obtained, creating document...")
+        doc = service.documents().create(body={"title": req.name}).execute()
+        doc_id = doc.get("documentId")
+        print(f"✅ Document created with ID: {doc_id}")
+        return {"status": "success", "link": f"https://docs.google.com/document/d/{doc_id}"}
+    except Exception as e:
+        print(f"❌ Error creating document: {e}")
+        return {"status": "error", "message": f"Failed to create document: {str(e)}"}
 
 @app.post("/create_sheet")
 def create_sheet(req: SheetRequest):
