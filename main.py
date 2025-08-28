@@ -50,9 +50,6 @@ class SheetRequest(BaseModel):
 # ChatGPT-friendly API base (your own Heroku app)
 CHATGPT_API_BASE = "https://my-google-bridge-1b5a7ab10d6b.herokuapp.com"
 
-# Token storage file
-TOKEN_FILE = "token.json"
-
 def create_session_token(creds_data: dict) -> str:
     """Create a JWT token for session management."""
     payload = {
@@ -67,6 +64,62 @@ def verify_session_token(token: str) -> dict:
         payload = jwt.decode(token, JWT_SECRET, algorithms=['HS256'])
         return payload.get('creds')
     except:
+        return None
+
+def save_tokens_to_env(creds):
+    """Save OAuth tokens to environment variables."""
+    try:
+        # Store tokens in environment variables
+        os.environ['GOOGLE_ACCESS_TOKEN'] = creds.token
+        os.environ['GOOGLE_REFRESH_TOKEN'] = creds.refresh_token or ''
+        os.environ['GOOGLE_TOKEN_URI'] = creds.token_uri
+        os.environ['GOOGLE_CLIENT_ID'] = creds.client_id
+        os.environ['GOOGLE_CLIENT_SECRET'] = creds.client_secret or ''
+        os.environ['GOOGLE_SCOPES'] = json.dumps(creds.scopes)
+        os.environ['GOOGLE_TOKEN_EXPIRY'] = creds.expiry.isoformat() if creds.expiry else ''
+        
+        # Also set Heroku config vars if available
+        try:
+            import subprocess
+            subprocess.run([
+                'heroku', 'config:set',
+                f'GOOGLE_ACCESS_TOKEN={creds.token}',
+                f'GOOGLE_REFRESH_TOKEN={creds.refresh_token or ""}',
+                f'GOOGLE_TOKEN_URI={creds.token_uri}',
+                f'GOOGLE_CLIENT_ID={creds.client_id}',
+                f'GOOGLE_CLIENT_SECRET={creds.client_secret or ""}',
+                f'GOOGLE_SCOPES={json.dumps(creds.scopes)}',
+                f'GOOGLE_TOKEN_EXPIRY={creds.expiry.isoformat() if creds.expiry else ""}'
+            ], check=True)
+        except:
+            # Heroku CLI not available, continue with environment variables
+            pass
+            
+        return True
+    except Exception as e:
+        print(f"Error saving tokens to environment: {e}")
+        return False
+
+def load_tokens_from_env():
+    """Load OAuth tokens from environment variables."""
+    try:
+        # Check if we have the required tokens
+        if not os.environ.get('GOOGLE_ACCESS_TOKEN'):
+            return None
+            
+        # Create credentials from environment variables
+        creds = Credentials(
+            token=os.environ.get('GOOGLE_ACCESS_TOKEN'),
+            refresh_token=os.environ.get('GOOGLE_REFRESH_TOKEN'),
+            token_uri=os.environ.get('GOOGLE_TOKEN_URI'),
+            client_id=os.environ.get('GOOGLE_CLIENT_ID'),
+            client_secret=os.environ.get('GOOGLE_CLIENT_SECRET'),
+            scopes=json.loads(os.environ.get('GOOGLE_SCOPES', '[]'))
+        )
+        
+        return creds
+    except Exception as e:
+        print(f"Error loading tokens from environment: {e}")
         return None
 
 def get_oauth_flow():
@@ -112,28 +165,24 @@ def get_authenticated_services():
     """Get authenticated Google services using saved tokens."""
     global drive_service, docs_service
     
-    # Check if we have saved tokens
-    if not os.path.exists(TOKEN_FILE):
+    # Try to load tokens from environment variables
+    creds = load_tokens_from_env()
+    if not creds:
         raise HTTPException(
             status_code=401,
             detail="Google authentication required. Please visit /auth to authenticate."
         )
     
     try:
-        # Load credentials from saved token file
-        creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
-        
         # Check if credentials are valid
         if not creds.valid:
             if creds.expired and creds.refresh_token:
                 # Refresh expired credentials
                 creds.refresh(GoogleRequest())
                 # Save refreshed credentials
-                with open(TOKEN_FILE, "w") as f:
-                    f.write(creds.to_json())
+                save_tokens_to_env(creds)
             else:
                 # Credentials are invalid and can't be refreshed
-                os.remove(TOKEN_FILE)  # Remove invalid token
                 raise HTTPException(
                     status_code=401,
                     detail="Google authentication expired. Please visit /auth to re-authenticate."
@@ -145,13 +194,26 @@ def get_authenticated_services():
         return drive_service, docs_service
         
     except Exception as e:
-        # If there's any error with the token, remove it and ask for re-authentication
-        if os.path.exists(TOKEN_FILE):
-            os.remove(TOKEN_FILE)
+        # If there's any error with the token, clear environment variables and ask for re-authentication
+        clear_tokens_from_env()
         raise HTTPException(
             status_code=401,
             detail=f"Google authentication failed: {str(e)}. Please visit /auth to re-authenticate."
         )
+
+def clear_tokens_from_env():
+    """Clear OAuth tokens from environment variables."""
+    try:
+        # Clear environment variables
+        env_vars = [
+            'GOOGLE_ACCESS_TOKEN', 'GOOGLE_REFRESH_TOKEN', 'GOOGLE_TOKEN_URI',
+            'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_SCOPES', 'GOOGLE_TOKEN_EXPIRY'
+        ]
+        for var in env_vars:
+            if var in os.environ:
+                del os.environ[var]
+    except:
+        pass
 
 def authenticate_google_services(request: Request):
     """Authenticate with Google services using OAuth 2.0 (legacy method with cookies)."""
@@ -245,7 +307,7 @@ async def start_oauth_flow():
 
 @app.get("/oauth2callback")
 async def oauth2_callback(code: str, state: str):
-    """Handle OAuth 2.0 callback and save tokens."""
+    """Handle OAuth 2.0 callback and save tokens to environment variables."""
     try:
         # Get the flow
         flow = get_oauth_flow()
@@ -254,39 +316,42 @@ async def oauth2_callback(code: str, state: str):
         # Get credentials
         creds = flow.credentials
         
-        # Save credentials to file for future API calls
-        with open(TOKEN_FILE, "w") as f:
-            f.write(creds.to_json())
-        
-        # Also create session token for browser users (backward compatibility)
-        creds_data = {
-            'token': creds.token,
-            'refresh_token': creds.refresh_token,
-            'token_uri': creds.token_uri,
-            'client_id': creds.client_id,
-            'client_secret': creds.client_secret,
-            'scopes': creds.scopes
-        }
-        
-        session_token = create_session_token(creds_data)
-        
-        # Create response with cookie
-        response = JSONResponse(content={
-            "message": "Authentication successful! Tokens saved for API access.",
-            "status": "authenticated",
-            "note": "You can now use the API endpoints directly or through ChatGPT"
-        })
-        
-        # Set cookie with session token (for browser users)
-        response.set_cookie(
-            key="session_token",
-            value=session_token,
-            httponly=True,
-            secure=os.environ.get('HEROKU_APP_NAME') is not None,  # HTTPS only in production
-            max_age=604800  # 7 days
-        )
-        
-        return response
+        # Save credentials to environment variables
+        if save_tokens_to_env(creds):
+            # Also create session token for browser users (backward compatibility)
+            creds_data = {
+                'token': creds.token,
+                'refresh_token': creds.refresh_token,
+                'token_uri': creds.token_uri,
+                'client_id': creds.client_id,
+                'client_secret': creds.client_secret,
+                'scopes': creds.scopes
+            }
+            
+            session_token = create_session_token(creds_data)
+            
+            # Create response with cookie
+            response = JSONResponse(content={
+                "message": "Authentication successful! Tokens saved to environment variables for API access.",
+                "status": "authenticated",
+                "note": "You can now use the API endpoints directly or through ChatGPT"
+            })
+            
+            # Set cookie with session token (for browser users)
+            response.set_cookie(
+                key="session_token",
+                value=session_token,
+                httponly=True,
+                secure=os.environ.get('HEROKU_APP_NAME') is not None,  # HTTPS only in production
+                max_age=604800  # 7 days
+            )
+            
+            return response
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to save authentication tokens"
+            )
         
     except Exception as e:
         raise HTTPException(
