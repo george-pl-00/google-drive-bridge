@@ -42,6 +42,9 @@ oauth_web_client.json
 token.pickle
 *.pickle
 
+# Configuration files with API keys (NEVER commit these!)
+config.py
+
 # IDE files
 .vscode/
 .idea/
