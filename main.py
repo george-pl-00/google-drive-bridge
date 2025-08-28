@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 from google_auth_oauthlib.flow import Flow
 from google.auth.transport.requests import Request as GoogleRequest
 from googleapiclient.discovery import build
+from google.oauth2.credentials import Credentials
 import json
 import requests
 
@@ -48,6 +49,9 @@ class SheetRequest(BaseModel):
 
 # ChatGPT-friendly API base (your own Heroku app)
 CHATGPT_API_BASE = "https://my-google-bridge-1b5a7ab10d6b.herokuapp.com"
+
+# Token storage file
+TOKEN_FILE = "token.json"
 
 def create_session_token(creds_data: dict) -> str:
     """Create a JWT token for session management."""
@@ -104,8 +108,53 @@ def get_oauth_flow():
     
     return flow
 
+def get_authenticated_services():
+    """Get authenticated Google services using saved tokens."""
+    global drive_service, docs_service
+    
+    # Check if we have saved tokens
+    if not os.path.exists(TOKEN_FILE):
+        raise HTTPException(
+            status_code=401,
+            detail="Google authentication required. Please visit /auth to authenticate."
+        )
+    
+    try:
+        # Load credentials from saved token file
+        creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
+        
+        # Check if credentials are valid
+        if not creds.valid:
+            if creds.expired and creds.refresh_token:
+                # Refresh expired credentials
+                creds.refresh(GoogleRequest())
+                # Save refreshed credentials
+                with open(TOKEN_FILE, "w") as f:
+                    f.write(creds.to_json())
+            else:
+                # Credentials are invalid and can't be refreshed
+                os.remove(TOKEN_FILE)  # Remove invalid token
+                raise HTTPException(
+                    status_code=401,
+                    detail="Google authentication expired. Please visit /auth to re-authenticate."
+                )
+        
+        # Build services with valid credentials
+        drive_service = build("drive", "v3", credentials=creds)
+        docs_service = build("docs", "v1", credentials=creds)
+        return drive_service, docs_service
+        
+    except Exception as e:
+        # If there's any error with the token, remove it and ask for re-authentication
+        if os.path.exists(TOKEN_FILE):
+            os.remove(TOKEN_FILE)
+        raise HTTPException(
+            status_code=401,
+            detail=f"Google authentication failed: {str(e)}. Please visit /auth to re-authenticate."
+        )
+
 def authenticate_google_services(request: Request):
-    """Authenticate with Google services using OAuth 2.0."""
+    """Authenticate with Google services using OAuth 2.0 (legacy method with cookies)."""
     global drive_service, docs_service
     
     # Get session token from cookie
@@ -196,7 +245,7 @@ async def start_oauth_flow():
 
 @app.get("/oauth2callback")
 async def oauth2_callback(code: str, state: str):
-    """Handle OAuth 2.0 callback."""
+    """Handle OAuth 2.0 callback and save tokens."""
     try:
         # Get the flow
         flow = get_oauth_flow()
@@ -205,7 +254,11 @@ async def oauth2_callback(code: str, state: str):
         # Get credentials
         creds = flow.credentials
         
-        # Create session token
+        # Save credentials to file for future API calls
+        with open(TOKEN_FILE, "w") as f:
+            f.write(creds.to_json())
+        
+        # Also create session token for browser users (backward compatibility)
         creds_data = {
             'token': creds.token,
             'refresh_token': creds.refresh_token,
@@ -219,11 +272,12 @@ async def oauth2_callback(code: str, state: str):
         
         # Create response with cookie
         response = JSONResponse(content={
-            "message": "Authentication successful!",
-            "status": "authenticated"
+            "message": "Authentication successful! Tokens saved for API access.",
+            "status": "authenticated",
+            "note": "You can now use the API endpoints directly or through ChatGPT"
         })
         
-        # Set cookie with session token
+        # Set cookie with session token (for browser users)
         response.set_cookie(
             key="session_token",
             value=session_token,
@@ -244,8 +298,12 @@ async def oauth2_callback(code: str, state: str):
 async def create_doc(request: DocRequest, http_request: Request):
     """Create a Google Document in Drive."""
     try:
-        # Ensure services are authenticated
-        drive_service, docs_service = authenticate_google_services(http_request)
+        # Try to get authenticated services using saved tokens first
+        try:
+            drive_service, docs_service = get_authenticated_services()
+        except HTTPException:
+            # Fall back to cookie-based authentication for backward compatibility
+            drive_service, docs_service = authenticate_google_services(http_request)
         
         # 1. Create the Google Doc file in Drive
         file_metadata = {
@@ -279,8 +337,12 @@ async def create_doc(request: DocRequest, http_request: Request):
 async def create_sheet(request: SheetRequest, http_request: Request):
     """Create a Google Sheet in Drive."""
     try:
-        # Ensure services are authenticated
-        drive_service, docs_service = authenticate_google_services(http_request)
+        # Try to get authenticated services using saved tokens first
+        try:
+            drive_service, docs_service = get_authenticated_services()
+        except HTTPException:
+            # Fall back to cookie-based authentication for backward compatibility
+            drive_service, docs_service = authenticate_google_services(http_request)
         
         # Create empty Google Sheet
         file_metadata = {
