@@ -40,6 +40,9 @@ app = FastAPI(
 drive_service = None
 docs_service = None
 
+# In-memory token storage
+STORED_CREDENTIALS = None
+
 # Request models
 class DocRequest(BaseModel):
     name: str
@@ -66,61 +69,26 @@ def verify_session_token(token: str) -> dict:
     except:
         return None
 
-def save_tokens_to_env(creds):
-    """Save OAuth tokens to environment variables."""
+def save_tokens_to_memory(creds):
+    """Save OAuth tokens to in-memory storage."""
+    global STORED_CREDENTIALS
     try:
-        # Store tokens in environment variables
-        os.environ['GOOGLE_ACCESS_TOKEN'] = creds.token
-        os.environ['GOOGLE_REFRESH_TOKEN'] = creds.refresh_token or ''
-        os.environ['GOOGLE_TOKEN_URI'] = creds.token_uri
-        os.environ['GOOGLE_CLIENT_ID'] = creds.client_id
-        os.environ['GOOGLE_CLIENT_SECRET'] = creds.client_secret or ''
-        os.environ['GOOGLE_SCOPES'] = json.dumps(creds.scopes)
-        os.environ['GOOGLE_TOKEN_EXPIRY'] = creds.expiry.isoformat() if creds.expiry else ''
-        
-        # Also set Heroku config vars if available
-        try:
-            import subprocess
-            subprocess.run([
-                'heroku', 'config:set',
-                f'GOOGLE_ACCESS_TOKEN={creds.token}',
-                f'GOOGLE_REFRESH_TOKEN={creds.refresh_token or ""}',
-                f'GOOGLE_TOKEN_URI={creds.token_uri}',
-                f'GOOGLE_CLIENT_ID={creds.client_id}',
-                f'GOOGLE_CLIENT_SECRET={creds.client_secret or ""}',
-                f'GOOGLE_SCOPES={json.dumps(creds.scopes)}',
-                f'GOOGLE_TOKEN_EXPIRY={creds.expiry.isoformat() if creds.expiry else ""}'
-            ], check=True)
-        except:
-            # Heroku CLI not available, continue with environment variables
-            pass
-            
+        # Store the credentials object directly in memory
+        STORED_CREDENTIALS = creds
         return True
     except Exception as e:
-        print(f"Error saving tokens to environment: {e}")
+        print(f"Error saving tokens to memory: {e}")
         return False
 
-def load_tokens_from_env():
-    """Load OAuth tokens from environment variables."""
-    try:
-        # Check if we have the required tokens
-        if not os.environ.get('GOOGLE_ACCESS_TOKEN'):
-            return None
-            
-        # Create credentials from environment variables
-        creds = Credentials(
-            token=os.environ.get('GOOGLE_ACCESS_TOKEN'),
-            refresh_token=os.environ.get('GOOGLE_REFRESH_TOKEN'),
-            token_uri=os.environ.get('GOOGLE_TOKEN_URI'),
-            client_id=os.environ.get('GOOGLE_CLIENT_ID'),
-            client_secret=os.environ.get('GOOGLE_CLIENT_SECRET'),
-            scopes=json.loads(os.environ.get('GOOGLE_SCOPES', '[]'))
-        )
-        
-        return creds
-    except Exception as e:
-        print(f"Error loading tokens from environment: {e}")
-        return None
+def load_tokens_from_memory():
+    """Load OAuth tokens from in-memory storage."""
+    global STORED_CREDENTIALS
+    return STORED_CREDENTIALS
+
+def clear_tokens_from_memory():
+    """Clear OAuth tokens from in-memory storage."""
+    global STORED_CREDENTIALS
+    STORED_CREDENTIALS = None
 
 def get_oauth_flow():
     """Create OAuth flow for web application."""
@@ -165,8 +133,8 @@ def get_authenticated_services():
     """Get authenticated Google services using saved tokens."""
     global drive_service, docs_service
     
-    # Try to load tokens from environment variables
-    creds = load_tokens_from_env()
+    # Try to load tokens from in-memory storage
+    creds = load_tokens_from_memory()
     if not creds:
         raise HTTPException(
             status_code=401,
@@ -180,9 +148,10 @@ def get_authenticated_services():
                 # Refresh expired credentials
                 creds.refresh(GoogleRequest())
                 # Save refreshed credentials
-                save_tokens_to_env(creds)
+                save_tokens_to_memory(creds)
             else:
                 # Credentials are invalid and can't be refreshed
+                clear_tokens_from_memory()
                 raise HTTPException(
                     status_code=401,
                     detail="Google authentication expired. Please visit /auth to re-authenticate."
@@ -194,26 +163,12 @@ def get_authenticated_services():
         return drive_service, docs_service
         
     except Exception as e:
-        # If there's any error with the token, clear environment variables and ask for re-authentication
-        clear_tokens_from_env()
+        # If there's any error with the token, clear memory and ask for re-authentication
+        clear_tokens_from_memory()
         raise HTTPException(
             status_code=401,
             detail=f"Google authentication failed: {str(e)}. Please visit /auth to re-authenticate."
         )
-
-def clear_tokens_from_env():
-    """Clear OAuth tokens from environment variables."""
-    try:
-        # Clear environment variables
-        env_vars = [
-            'GOOGLE_ACCESS_TOKEN', 'GOOGLE_REFRESH_TOKEN', 'GOOGLE_TOKEN_URI',
-            'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_SCOPES', 'GOOGLE_TOKEN_EXPIRY'
-        ]
-        for var in env_vars:
-            if var in os.environ:
-                del os.environ[var]
-    except:
-        pass
 
 def authenticate_google_services(request: Request):
     """Authenticate with Google services using OAuth 2.0 (legacy method with cookies)."""
@@ -307,7 +262,7 @@ async def start_oauth_flow():
 
 @app.get("/oauth2callback")
 async def oauth2_callback(code: str, state: str):
-    """Handle OAuth 2.0 callback and save tokens to environment variables."""
+    """Handle OAuth 2.0 callback and save tokens to in-memory storage."""
     try:
         # Get the flow
         flow = get_oauth_flow()
@@ -316,8 +271,8 @@ async def oauth2_callback(code: str, state: str):
         # Get credentials
         creds = flow.credentials
         
-        # Save credentials to environment variables
-        if save_tokens_to_env(creds):
+        # Save credentials to in-memory storage
+        if save_tokens_to_memory(creds):
             # Also create session token for browser users (backward compatibility)
             creds_data = {
                 'token': creds.token,
@@ -332,7 +287,7 @@ async def oauth2_callback(code: str, state: str):
             
             # Create response with cookie
             response = JSONResponse(content={
-                "message": "Authentication successful! Tokens saved to environment variables for API access.",
+                "message": "Authentication successful! Tokens saved to memory for API access.",
                 "status": "authenticated",
                 "note": "You can now use the API endpoints directly or through ChatGPT"
             })
