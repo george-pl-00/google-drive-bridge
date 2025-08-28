@@ -16,7 +16,7 @@ functions = [
         "parameters": {
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "Name of the document"}
+                "name": {"type": "string", "description": "The name of the document"}
             },
             "required": ["name"],
         },
@@ -27,7 +27,7 @@ functions = [
         "parameters": {
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "Name of the sheet"}
+                "name": {"type": "string", "description": "The name of the sheet"}
             },
             "required": ["name"],
         },
@@ -49,24 +49,36 @@ def chat_with_gpt(user_message: str):
 
     msg = response.choices[0].message
 
-    # Case 1: GPT decides to call a function
+    # Case 1: GPT wants to call a function
     if msg.function_call:
         func_name = msg.function_call.name
         args = eval(msg.function_call.arguments)
 
         if func_name == "create_google_doc":
             result = call_bridge("create_doc_chat", args)
-            return result
+            if result.get("status") == "error":
+                return f"⚠️ Please authenticate first: {result['auth_url']}"
+            return f"✅ Document created: {result['link']}"
+
         elif func_name == "create_google_sheet":
             result = call_bridge("create_sheet_chat", args)
-            return result
+            if result.get("status") == "error":
+                return f"⚠️ Please authenticate first: {result['auth_url']}"
+            return f"✅ Sheet created: {result['link']}"
 
-    # Case 2: GPT just answers normally
+    # Case 2: Normal text response
     return msg.content
 
 
 if __name__ == "__main__":
+    print("🤖 ChatGPT + Google Drive Bridge")
+    print("=" * 40)
+    print("💡 Try: 'Create a Google Doc called Meeting Notes'")
+    print("💡 Try: 'Make me a spreadsheet for Budget 2024'")
+    print("💡 Try: 'Hello, how are you?'")
+    print("=" * 40)
+    
     while True:
         user_input = input("You: ")
-        result = chat_with_gpt(user_input)
-        print("Assistant:", result)
+        print("Assistant:", chat_with_gpt(user_input))
+        print()
