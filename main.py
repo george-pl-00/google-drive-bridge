@@ -18,7 +18,8 @@ app = FastAPI()
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/documents",
-    "https://www.googleapis.com/auth/drive"
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/drive.file"
 ]
 REDIRECT_URI = "https://my-google-bridge-1b5a7ab10d6b.herokuapp.com/oauth2callback"
 TOKEN_FILE = "token.json"
