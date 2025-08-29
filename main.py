@@ -120,8 +120,7 @@ def auth():
     auth_url, _ = flow.authorization_url(
         prompt="consent",
         access_type="offline",
-        include_granted_scopes="true",
-        approval_prompt="force"
+        include_granted_scopes="true"
     )
     return {"auth_url": auth_url}
 
