@@ -52,11 +52,18 @@ def save_credentials(creds: Credentials):
 def load_credentials() -> Credentials:
     if not os.path.exists(TOKEN_FILE):
         return None
-    creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
-    if creds and creds.expired and creds.refresh_token:
-        creds.refresh(GoogleRequest())
-        save_credentials(creds)
-    return creds
+    try:
+        creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(GoogleRequest())
+            save_credentials(creds)
+        return creds
+    except Exception as e:
+        # Scope mismatch or invalid token → reset
+        if os.path.exists(TOKEN_FILE):
+            os.remove(TOKEN_FILE)
+        print(f"⚠️ Token invalid or scope mismatch, deleted token.json: {str(e)}")
+        return None
 
 def get_docs_service():
     creds = load_credentials()
@@ -118,7 +125,6 @@ def auth():
 @app.get("/oauth2callback")
 def oauth2callback(request: Request):
     try:
-        # Use Heroku environment variables for OAuth credentials
         client_id = os.environ.get('GOOGLE_OAUTH_CLIENT_ID')
         client_secret = os.environ.get('GOOGLE_OAUTH_CLIENT_SECRET')
         
@@ -146,7 +152,14 @@ def oauth2callback(request: Request):
         return {"status": "ok", "message": "Authentication successful! Tokens saved."}
         
     except Exception as e:
-        return {"status": "error", "message": f"Authentication failed: {str(e)}"}
+        # If scope mismatch or invalid grant → force reset
+        if os.path.exists(TOKEN_FILE):
+            os.remove(TOKEN_FILE)
+        return {
+            "status": "error",
+            "message": f"Authentication failed: {str(e)}",
+            "next_step": f"Visit /auth again to re-authorize with the correct scopes"
+        }
 
 
 # ----------------------------
