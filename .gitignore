@@ -44,6 +44,12 @@ token.pickle
 
 # Configuration files with API keys (NEVER commit these!)
 config.py
+config_new.py
+
+# OAuth token files (NEVER commit these!)
+token.json
+*.json
+!config_template.py
 
 # IDE files
 .vscode/
